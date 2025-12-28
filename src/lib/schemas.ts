@@ -15,12 +15,26 @@ export const IrradianceTmyRequestSchema = z.object({
   lon: z.number().min(-180).max(180)
 });
 
-export const IrradianceSeriesRequestSchema = z.object({
+export const PvgisSeriesRequestSchema = z.object({
+  source: z.literal("pvgis"),
   lat: z.number().min(-90).max(90),
   lon: z.number().min(-180).max(180),
   startYear: z.number().int().min(1990).max(2100),
   endYear: z.number().int().min(1990).max(2100)
 });
+
+export const CamsSeriesRequestSchema = z.object({
+  source: z.literal("cams"),
+  lat: z.number().min(-90).max(90),
+  lon: z.number().min(-180).max(180),
+  start: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/),
+  end: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/),
+  timeStep: z.enum(["1min", "15min", "1h", "1d", "1M"]).optional(),
+  identifier: z.enum(["cams_radiation", "mcclear"]).optional(),
+  integrated: z.boolean().optional()
+});
+
+export const IrradianceSeriesRequestSchema = z.discriminatedUnion("source", [PvgisSeriesRequestSchema, CamsSeriesRequestSchema]);
 
 export const IrradianceOptimalRequestSchema = z.object({
   lat: z.number().min(-90).max(90),

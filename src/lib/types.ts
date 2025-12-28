@@ -4,7 +4,7 @@ export type IrradianceUnit = {
 };
 
 export type IrradianceMetadata = {
-  source: "pvgis";
+  source: "pvgis" | "cams";
   queryType: "tmy" | "series";
   lat: number;
   lon: number;
