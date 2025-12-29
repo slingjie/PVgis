@@ -8,12 +8,18 @@
 - 地址解析：后端 Nominatim 地理编码返回候选列表；支持默认 `cn` 限定与“全球”切换
 - 可验证性：候选点单选 + 强制“确认坐标”后才可查询；页面内嵌 OpenStreetMap 地图确认
 - 数据源
-  - PVGIS：`TMY(8760)`、`SeriesCalc(按年)`；并提供“最佳倾角/方位角”摘要
-  - CAMS：逐时序列（默认 `1h`，可配时间范围、`identifier`、时间步长、是否输出能量积分）
+  - PVGIS：`TMY(8760)`、`Series(按年)`；并提供“最佳倾角/方位角”摘要
+  - CAMS（SoDa WPS）：逐时序列（默认 `1h`，可配时间范围、`identifier`、步长、是否输出能量积分）
 - 展示：图表 + 表格（支持月份筛选/分页）
-- 时间口径：后端统一输出 `UTC`（ISO8601）；前端显示支持 `UTC` / `中国时间(Asia/Shanghai)` 切换
+- 时间口径：后端统一输出 `UTC`（ISO8601）；前端显示支持 `UTC` / `中国时间(Asia/Shanghai)` 切换（`UTC 00:00` 显示为中国时间 `08:00` 属正常时区换算）
 - 导出：CSV（同时包含 `time_cn`、`time_utc`；顶部附带 `metadata` JSON 注释，便于追溯）
 - 稳定性：同参缓存（内存），第三方请求 URL 可复制复现
+
+## 当前进展（2025-12-29）
+
+- 已完成：CAMS 逐时序列接入（后端代理 + 字段规范化 + 缓存 + 前端查询面板）
+- 已完成：统一 `metadata + data[]` 输出，支持 `unit.irradiance(W/m2)` 与 `unit.irradiation(Wh/m2)` 两种口径（CAMS `integrated` 控制）
+- 已完成：前端数据源选择逻辑：`TMY` 模式固定 PVGIS（不覆盖你在 `Series` 模式选过的 CAMS）
 
 ## 本地运行
 
@@ -36,7 +42,7 @@ CAMS（使用 CAMS 数据源时必填）：
 
 - `CAMS_SODA_EMAIL`：SoDa 账户 email（服务端使用）
 - `CAMS_SODA_WPS_URL`：可选，默认 `https://api.soda-solardata.com/service/wps`
-- CAMS_SODA注册地址`www.soda-pro.com`
+- SoDa 注册地址：`https://www.soda-pro.com`
 
 示例：
 
@@ -86,6 +92,8 @@ CAMS 请求：
 ```
 
 > CAMS 需服务端配置 `CAMS_SODA_EMAIL`；时间范围为闭区间字符串（`YYYY-MM-DD`）。
+>
+> 注意：SoDa WPS 的底层参数是 `username + summarization`，本项目会根据 `timeStep` 映射为 SoDa 的 `summarization`（例如 `1h -> PT01H`）。
 
 ### 4) `POST /api/irradiance/optimal`（PVGIS）
 

@@ -126,7 +126,7 @@
 
 **数据源**
 - PVGIS：免费、无需 key（有调用频率限制），支持 TMY/逐时等
-- CAMS：通过 SoDa（通常以 email 作为标识），覆盖全球、变量更标准化
+- CAMS：通过 SoDa（以 email 作为用户标识），覆盖全球、变量更标准化（本项目用后端代理访问 SoDa WPS）
 
 **一期默认策略**
 - 默认 PVGIS
@@ -144,15 +144,18 @@
 - 输出：8760 条典型年逐时数据 + 元数据
 
 **5.3.3 CAMS｜逐时序列**
-- 输入：`lat/lon`、`start/end`、`time_step`（默认 1h）、`identifier`（如 all-sky/clear-sky）
-- 输出：逐时记录（ghi/dni/dhi 等标准字段）
+- 输入：`lat/lon`、`start/end`（YYYY-MM-DD）、`timeStep`（默认 1h）、`identifier`（`cams_radiation` all-sky / `mcclear` clear-sky）、`integrated`（是否输出能量积分）
+- 后端实现要点：
+  - SoDa WPS 需要 `username`（= email）与 `summarization`（由 `timeStep` 映射，如 `1h -> PT01H`）
+  - 默认输出为 `UTC`（ISO8601）；前端可按用户时区显示（例如中国时间会把 `UTC 00:00` 显示为 `08:00`）
+- 输出：逐时记录（`ghi/dni/dhi` + extras），并在 `metadata.unit` 中声明 `W/m2` 或 `Wh/m2`
 
 **5.3.4 字段规范化（统一数据模型）**
 - 统一输出结构：`metadata` + `data[]`
 - `data[]` 建议至少包含：
   - `time`（ISO8601）
   - `ghi`、`dni`、`dhi`（若源端没有则置空）
-  - `source_raw`（可选：保留原字段字典，便于追溯）
+  - `extras`（可选：保留其它字段字典，便于追溯/调试）
 
 ### 5.4 结果展示（一期）
 - 指标区（元信息）
@@ -210,14 +213,28 @@
 **请求**
 ```json
 {
+  "source": "pvgis",
   "lat": 30.27,
   "lon": 120.15,
-  "source": "pvgis",
-  "start": "2023-01-01",
-  "end": "2023-12-31",
-  "options": { "components": true }
+  "startYear": 2023,
+  "endYear": 2023
 }
 ```
+**请求（CAMS）**
+```json
+{
+  "source": "cams",
+  "lat": 30.27,
+  "lon": 120.15,
+  "start": "2025-11-01",
+  "end": "2025-11-30",
+  "timeStep": "1h",
+  "identifier": "cams_radiation",
+  "integrated": false
+}
+```
+> CAMS 需服务端配置 `CAMS_SODA_EMAIL`（SoDa 注册邮箱）；后端会代理拼装 SoDa WPS 参数并返回统一结构。
+
 **响应（统一结构）**
 ```json
 {
@@ -229,7 +246,7 @@
     "unit": { "irradiance": "W/m2" }
   },
   "data": [
-    { "time": "2023-01-01T10:00:00Z", "ghi": 650, "dni": 500, "dhi": 150, "sourceRaw": {} }
+    { "time": "2023-01-01T10:00:00Z", "ghi": 650, "dni": 500, "dhi": 150, "extras": {} }
   ]
 }
 ```
@@ -237,7 +254,7 @@
 ### 6.3 `POST /api/irradiance/tmy`
 **请求**
 ```json
-{ "lat": 30.27, "lon": 120.15, "source": "pvgis" }
+{ "lat": 30.27, "lon": 120.15 }
 ```
 **响应**
 - 同 `metadata + data[]`，且 `data.length == 8760`
@@ -334,4 +351,3 @@
 - 地理编码：免费服务（如 Nominatim）对“公司名称”解析不稳定，建议强制用户补充城市/区县或提供可替换的国内地图服务提供商
 - PVGIS/CAMS 的字段与时间口径存在差异，必须通过“统一 schema + metadata”解决可解释性
 - 第三方接口存在频控与不稳定性，需要缓存/限流/重试与降级提示
-
