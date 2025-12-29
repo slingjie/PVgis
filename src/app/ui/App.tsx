@@ -8,6 +8,7 @@ import { LineChart } from "@/app/ui/LineChart";
 type LocationMode = "address" | "coords";
 type QueryType = "tmy" | "series";
 type TimeMode = "cn" | "utc";
+type DataSource = "pvgis" | "cams";
 
 type Candidate = {
   lat: number;
@@ -99,6 +100,23 @@ function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
 
+function formatIsoDateUtc(date: Date): string {
+  const y = date.getUTCFullYear();
+  const m = date.getUTCMonth() + 1;
+  const d = date.getUTCDate();
+  return `${y}-${pad2(m)}-${pad2(d)}`;
+}
+
+function getDefaultCamsDateRange(): { start: string; end: string } {
+  // Use last full month in UTC to avoid future dates.
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth(); // 0-11
+  const end = new Date(Date.UTC(year, month, 0)); // last day of previous month
+  const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1));
+  return { start: formatIsoDateUtc(start), end: formatIsoDateUtc(end) };
+}
+
 function dayKeyFromParts(p: { y: number; m: number; d: number }) {
   return `${p.y}-${pad2(p.m)}-${pad2(p.d)}`;
 }
@@ -183,12 +201,19 @@ async function copyToClipboard(text: string): Promise<boolean> {
 export default function App() {
   const [mode, setMode] = useState<LocationMode>("address");
   const [queryType, setQueryType] = useState<QueryType>("tmy");
+  const [source, setSource] = useState<DataSource>("pvgis");
   const [address, setAddress] = useState("");
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
   const [geocodeScope, setGeocodeScope] = useState<"cn" | "global">("cn");
   const [startYear, setStartYear] = useState("2020");
   const [endYear, setEndYear] = useState("2020");
+  const [camsDateRange] = useState(() => getDefaultCamsDateRange());
+  const [camsStart, setCamsStart] = useState(camsDateRange.start);
+  const [camsEnd, setCamsEnd] = useState(camsDateRange.end);
+  const [camsTimeStep, setCamsTimeStep] = useState<"1min" | "15min" | "1h" | "1d" | "1M">("1h");
+  const [camsIdentifier, setCamsIdentifier] = useState<"cams_radiation" | "mcclear">("cams_radiation");
+  const [camsIntegrated, setCamsIntegrated] = useState(false);
 
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [candidateIdx, setCandidateIdx] = useState("0");
@@ -209,6 +234,8 @@ export default function App() {
   const [tableFollowChartDay, setTableFollowChartDay] = useState(true);
   const [page, setPage] = useState(1);
   const pageSize = 100;
+
+  const effectiveSource: DataSource = queryType === "tmy" ? "pvgis" : source;
 
   const selectedCandidate = candidates[Number(candidateIdx) ?? 0];
 
@@ -461,25 +488,51 @@ export default function App() {
         return;
       }
 
-      const sy = Number(startYear);
-      const ey = Number(endYear);
-      if (!Number.isInteger(sy) || !Number.isInteger(ey) || sy < 1990 || ey < 1990 || sy > 2100 || ey > 2100) {
-        throw new Error("请输入合法年份（1990–2100）。");
+      if (effectiveSource === "pvgis") {
+        const sy = Number(startYear);
+        const ey = Number(endYear);
+        if (!Number.isInteger(sy) || !Number.isInteger(ey) || sy < 1990 || ey < 1990 || sy > 2100 || ey > 2100) {
+          throw new Error("请输入合法年份（1990–2100）。");
+        }
+        const res = await fetch("/api/irradiance/series", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ source: "pvgis", lat: latNum, lon: lonNum, startYear: sy, endYear: ey })
+        });
+        const json = (await res.json()) as any;
+        if (!res.ok) {
+          if (typeof json?.yearMin === "number" && typeof json?.yearMax === "number") {
+            setStartYear(String(json.yearMin));
+            setEndYear(String(json.yearMax));
+            throw new Error(`PVGIS 该地点可用年份范围为 ${json.yearMin}–${json.yearMax}，已自动填入范围，请重新点击查询。`);
+          }
+          throw new Error(json?.error ?? "series query failed");
+        }
+        setResult(json as IrradianceResponse);
+        return;
       }
+
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(camsStart) || !/^\d{4}-\d{2}-\d{2}$/.test(camsEnd)) {
+        throw new Error("请输入合法日期（YYYY-MM-DD）。");
+      }
+      if (camsEnd < camsStart) throw new Error("结束日期必须不早于开始日期。");
+
       const res = await fetch("/api/irradiance/series", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ lat: latNum, lon: lonNum, startYear: sy, endYear: ey })
+        body: JSON.stringify({
+          source: "cams",
+          lat: latNum,
+          lon: lonNum,
+          start: camsStart,
+          end: camsEnd,
+          timeStep: camsTimeStep,
+          identifier: camsIdentifier,
+          integrated: camsIntegrated
+        })
       });
       const json = (await res.json()) as any;
-      if (!res.ok) {
-        if (typeof json?.yearMin === "number" && typeof json?.yearMax === "number") {
-          setStartYear(String(json.yearMin));
-          setEndYear(String(json.yearMax));
-          throw new Error(`PVGIS 该地点可用年份范围为 ${json.yearMin}–${json.yearMax}，已自动填入范围，请重新点击查询。`);
-        }
-        throw new Error(json?.error ?? "series query failed");
-      }
+      if (!res.ok) throw new Error(json?.error ?? "CAMS query failed");
       setResult(json as IrradianceResponse);
     } catch (e) {
       setError(e instanceof Error ? e.message : "query failed");
@@ -528,9 +581,9 @@ export default function App() {
   return (
     <main className="grid" style={{ gap: 16 }}>
       <div style={{ display: "grid", gap: 6, marginBottom: 4 }}>
-        <h1>太阳辐照数据查询（PVGIS）</h1>
+        <h1>太阳辐照数据查询（PVGIS + CAMS）</h1>
         <p>
-          一期 MVP：地址/经纬度 → 查询 PVGIS 典型年（TMY）或逐时序列（Series），展示图表与表格并导出 CSV。
+          一期 MVP：地址/经纬度 → 查询 PVGIS（TMY/Series）或 CAMS（Series），展示图表与表格并导出 CSV。
         </p>
       </div>
 
@@ -538,7 +591,7 @@ export default function App() {
         <div className="card">
           <h2>查询</h2>
           <div className="row" style={{ marginBottom: 10 }}>
-            <span className="pill">数据源：PVGIS</span>
+            <span className="pill">数据源：{queryType === "tmy" ? "PVGIS" : effectiveSource === "pvgis" ? "PVGIS" : "CAMS (SoDa)"}</span>
             <span className="pill">数据时间基准：UTC</span>
             <span className="pill">显示：{timeMode === "utc" ? "UTC" : "中国时间"}</span>
           </div>
@@ -554,12 +607,32 @@ export default function App() {
 
             <div className="field">
               <div className="label">查询类型</div>
-              <select value={queryType} onChange={(e) => setQueryType(e.target.value as QueryType)}>
+              <select
+                value={queryType}
+                onChange={(e) => {
+                  const next = e.target.value as QueryType;
+                  setQueryType(next);
+                }}
+              >
                 <option value="tmy">典型年（TMY，8760）</option>
-                <option value="series">逐时序列（SeriesCalc）</option>
+                <option value="series">逐时序列（Series）</option>
+              </select>
+            </div>
+
+            <div className="field">
+              <div className="label">数据源</div>
+              <select
+                value={effectiveSource}
+                disabled={queryType === "tmy"}
+                onChange={(e) => setSource(e.target.value as DataSource)}
+              >
+                <option value="pvgis">PVGIS</option>
+                <option value="cams">CAMS（SoDa）</option>
               </select>
             </div>
           </div>
+
+          {queryType === "tmy" ? <div className="pill" style={{ marginTop: 10, justifySelf: "start" }}>提示：TMY 目前仅支持 PVGIS。</div> : null}
 
           {mode === "address" ? (
             <div className="row" style={{ marginTop: 10 }}>
@@ -598,7 +671,7 @@ export default function App() {
             </div>
           )}
 
-          {queryType === "series" ? (
+          {queryType === "series" && effectiveSource === "pvgis" ? (
             <div className="row" style={{ marginTop: 10 }}>
               <div className="field">
                 <div className="label">开始年份</div>
@@ -607,6 +680,47 @@ export default function App() {
               <div className="field">
                 <div className="label">结束年份</div>
                 <input value={endYear} onChange={(e) => setEndYear(e.target.value)} placeholder="2020" />
+              </div>
+            </div>
+          ) : null}
+
+          {queryType === "series" && effectiveSource === "cams" ? (
+            <div className="grid" style={{ gap: 10, marginTop: 10 }}>
+              <div className="row">
+                <div className="field">
+                  <div className="label">开始日期（UTC）</div>
+                  <input type="date" value={camsStart} onChange={(e) => setCamsStart(e.target.value)} />
+                </div>
+                <div className="field">
+                  <div className="label">结束日期（UTC）</div>
+                  <input type="date" value={camsEnd} onChange={(e) => setCamsEnd(e.target.value)} />
+                </div>
+              </div>
+              <div className="row">
+                <div className="field">
+                  <div className="label">时间步长</div>
+                  <select value={camsTimeStep} onChange={(e) => setCamsTimeStep(e.target.value as any)}>
+                    <option value="1h">1h</option>
+                    <option value="15min">15min</option>
+                    <option value="1min">1min</option>
+                    <option value="1d">1d</option>
+                    <option value="1M">1M</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <div className="label">模式</div>
+                  <select value={camsIdentifier} onChange={(e) => setCamsIdentifier(e.target.value as any)}>
+                    <option value="cams_radiation">all-sky（CAMS radiation）</option>
+                    <option value="mcclear">clear-sky（McClear）</option>
+                  </select>
+                </div>
+                <label className="pill" style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
+                  <input type="checkbox" checked={camsIntegrated} onChange={(e) => setCamsIntegrated(e.target.checked)} />
+                  integrated（能量）
+                </label>
+              </div>
+              <div className="pill" style={{ justifySelf: "start" }}>
+                提示：CAMS 需要在服务器环境变量中设置 `CAMS_SODA_EMAIL`。
               </div>
             </div>
           ) : null}
@@ -673,7 +787,7 @@ export default function App() {
               >
                 导出 CSV
               </button>
-              ) : null}
+            ) : null}
           </div>
 
           {error ? (
@@ -696,24 +810,34 @@ export default function App() {
                 {result.metadata.cached ? <span className="pill">缓存命中</span> : <span className="pill">实时请求</span>}
               </div>
               <div className="row" style={{ justifyContent: "space-between" }}>
+                <span className="pill">数据源：{result.metadata.source.toUpperCase()}</span>
+                <span className="pill">时间基准：{result.metadata.timeRef}</span>
+              </div>
+              <div className="row" style={{ justifyContent: "space-between" }}>
                 <span className="pill">类型：{result.metadata.queryType.toUpperCase()}</span>
                 <span className="pill">记录数：{result.data.length}</span>
               </div>
               <div className="row" style={{ justifyContent: "space-between" }}>
                 <span className="pill">字段：GHI/DNI/DHI + extras</span>
-                <span className="pill">单位：{result.metadata.unit.irradiance ?? "—"}</span>
+                <span className="pill">单位：{result.metadata.unit.irradiance ?? result.metadata.unit.irradiation ?? "—"}</span>
               </div>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <span className="pill">最佳倾角：{optimal ? `${optimal.optimalTiltDeg ?? "—"}°` : "加载中…"}</span>
-                <span className="pill">最佳方位角：{optimal ? `${optimal.optimalAzimuthDeg ?? "—"}°` : "加载中…"}</span>
-              </div>
+              {result.metadata.source === "pvgis" ? (
+                <div className="row" style={{ justifyContent: "space-between" }}>
+                  <span className="pill">最佳倾角：{optimal ? `${optimal.optimalTiltDeg ?? "—"}°` : "加载中…"}</span>
+                  <span className="pill">最佳方位角：{optimal ? `${optimal.optimalAzimuthDeg ?? "—"}°` : "加载中…"}</span>
+                </div>
+              ) : null}
               <div className="row" style={{ justifyContent: "space-between" }}>
                 <span className="pill">
                   年水平面辐照量：{annualHorizontalKwhM2 !== null ? `${annualHorizontalKwhM2.toFixed(1)} kWh/m²` : "—"}
                 </span>
-                <span className="pill">
-                  年最佳倾角面辐照量：{optimal ? `${optimal.annualPoaKwhM2.toFixed(1)} kWh/m²` : "加载中…"}
-                </span>
+                {result.metadata.source === "pvgis" ? (
+                  <span className="pill">
+                    年最佳倾角面辐照量：{optimal ? `${optimal.annualPoaKwhM2.toFixed(1)} kWh/m²` : "加载中…"}
+                  </span>
+                ) : (
+                  <span className="pill">年最佳倾角面辐照量：—</span>
+                )}
               </div>
               <div className="row" style={{ justifyContent: "space-between" }}>
                 <button className="secondary" onClick={() => setShowDebug((v) => !v)}>
