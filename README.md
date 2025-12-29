@@ -36,6 +36,7 @@ CAMS（使用 CAMS 数据源时必填）：
 
 - `CAMS_SODA_EMAIL`：SoDa 账户 email（服务端使用）
 - `CAMS_SODA_WPS_URL`：可选，默认 `https://api.soda-solardata.com/service/wps`
+- CAMS_SODA注册地址`www.soda-pro.com`
 
 示例：
 

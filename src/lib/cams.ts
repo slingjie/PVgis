@@ -83,7 +83,26 @@ export async function fetchCamsSeries(lat: number, lon: number, params: FetchCam
 
   if (!params.email.trim()) throw new Error("CAMS requires SoDa email (set CAMS_SODA_EMAIL or pass email)");
 
-  const emailEscaped = params.email.trim().replaceAll("@", "%2540");
+  // In SoDa WPS "DataInputs", '@' can be treated specially by the parser; passing it URL-encoded is safer.
+  // encodeURIComponent(email) -> "...%40..."; after URLSearchParams encoding, the server sees "%40".
+  const usernameEncoded = encodeURIComponent(params.email.trim());
+
+  const summarization = (() => {
+    switch (timeStep) {
+      case "1min":
+        return "PT01M";
+      case "15min":
+        return "PT15M";
+      case "1h":
+        return "PT01H";
+      case "1d":
+        return "P01D";
+      case "1M":
+        return "P01M";
+      default:
+        return "PT01H";
+    }
+  })();
 
   const url = new URL(SODA_WPS_BASE_URL);
   url.searchParams.set(
@@ -95,11 +114,9 @@ export async function fetchCamsSeries(lat: number, lon: number, params: FetchCam
       `date_begin=${params.start}`,
       `date_end=${params.end}`,
       "time_ref=UT",
-      `time_step=${timeStep}`,
-      `email=${emailEscaped}`,
-      "verbose=false",
-      "outputformat=csv",
-      `integrated=${integrated ? "true" : "false"}`
+      `summarization=${summarization}`,
+      `username=${usernameEncoded}`,
+      "verbose=false"
     ].join(";")
   );
   url.searchParams.set("Service", "WPS");
@@ -116,9 +133,31 @@ export async function fetchCamsSeries(lat: number, lon: number, params: FetchCam
     const rawTime = r[observationKey];
     if (!rawTime) throw new Error("CAMS CSV missing Observation period column");
 
-    const ghi = numberOrNull(r.GHI);
-    const dni = numberOrNull(r.BNI);
-    const dhi = numberOrNull(r.DHI);
+    const rawGhi = numberOrNull(r.GHI);
+    const rawDni = numberOrNull(r.BNI);
+    const rawDhi = numberOrNull(r.DHI);
+
+    // CAMS WPS returns irradiation (energy) over the observation period. If caller requests non-integrated,
+    // convert to average irradiance (W/m2) by dividing by period hours.
+    const periodHours =
+      summarization === "PT01M"
+        ? 1 / 60
+        : summarization === "PT15M"
+          ? 0.25
+          : summarization === "PT01H"
+            ? 1
+            : summarization === "P01D"
+              ? 24
+              : summarization === "P01M"
+                ? 24 * 30
+                : 1;
+
+    const toIrradiance = (v: number | null) => (v === null ? null : v / periodHours);
+    const toIrradiation = (v: number | null) => v;
+
+    const ghi = integrated ? toIrradiation(rawGhi) : toIrradiance(rawGhi);
+    const dni = integrated ? toIrradiation(rawDni) : toIrradiance(rawDni);
+    const dhi = integrated ? toIrradiation(rawDhi) : toIrradiance(rawDhi);
 
     const skip = new Set([observationKey, "GHI", "BNI", "DHI"]);
     return {
@@ -142,9 +181,8 @@ export async function fetchCamsSeries(lat: number, lon: number, params: FetchCam
       unit,
       provider: "soda",
       requestUrl: url.toString(),
-      rawInputs: { params: { ...params, email: undefined }, soda: meta }
+      rawInputs: { params: { ...params, email: undefined }, soda: meta, summarization }
     },
     data
   };
 }
-
